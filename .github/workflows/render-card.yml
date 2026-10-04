@@ -1,0 +1,55 @@
+name: render-card
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - "cards/**"
+      - ".github/workflows/render-card.yml"
+
+permissions:
+  contents: write
+
+jobs:
+  render:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Render cards to PNG
+        run: |
+          mkdir -p assets/images logs
+          exec > >(tee logs/render.log) 2>&1
+          set -x
+          npm i -g playwright@1.47.0 || echo NPM_INSTALL_FAILED
+          npx playwright install --with-deps chromium || echo PW_INSTALL_FAILED
+          for f in cards/*.html; do
+            name="$(basename "$f" .html)"
+            npx playwright screenshot --viewport-size="1080,1080" --wait-for-timeout=4000 "file://$PWD/$f" "assets/images/${name}.png" || echo "RENDER_FAILED:$name"
+          done
+          python3 - <<'PY'
+          import json,hashlib,os,glob
+          out={}
+          for p in sorted(glob.glob("assets/images/*.png")):
+              b=open(p,"rb").read()
+              out[os.path.basename(p)]={"bytes":len(b),"md5":hashlib.md5(b).hexdigest(),"sha256":hashlib.sha256(b).hexdigest()}
+          json.dump(out,open("assets/images/index.json","w"),indent=2,sort_keys=True)
+          print(json.dumps(out))
+          PY
+
+      - name: Commit outputs and logs
+        if: always()
+        run: |
+          git config user.name "leadup-bot"
+          git config user.email "bot@leadup.ai"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "nothing to commit"
+          else
+            git commit -m "chore: render cards from html"
+            git push
+          fi
